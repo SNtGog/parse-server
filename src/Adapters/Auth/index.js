@@ -7,23 +7,28 @@ const digits = require('./twitter'); // digits tokens are validated by twitter
 const facebook = require('./facebook');
 import gcenter from './gcenter';
 import github from './github';
+
 const google = require('./google');
 import gpgames from './gpgames';
 import instagram from './instagram';
+
 const janraincapture = require('./janraincapture');
 const janrainengage = require('./janrainengage');
 const keycloak = require('./keycloak');
 const ldap = require('./ldap');
 import line from './line';
 import linkedin from './linkedin';
+
 const meetup = require('./meetup');
 import mfa from './mfa';
 import microsoft from './microsoft';
 import oauth2 from './oauth2';
+
 const phantauth = require('./phantauth');
 import qq from './qq';
 import spotify from './spotify';
 import twitter from './twitter';
+
 const vkontakte = require('./vkontakte');
 import wechat from './wechat';
 import weibo from './weibo';
@@ -74,7 +79,7 @@ const authAdapterPolicies = {
 };
 
 function authDataValidator(provider, adapter, appIds, options) {
-  return async function (authData, req, user, requestObject) {
+  return async function(authData, req, user, requestObject) {
     if (appIds && typeof adapter.validateAppId === 'function') {
       await Promise.resolve(adapter.validateAppId(appIds, authData, options, requestObject));
     }
@@ -85,7 +90,7 @@ function authDataValidator(provider, adapter, appIds, options) {
     ) {
       throw new Parse.Error(
         Parse.Error.OTHER_CAUSE,
-        'AuthAdapter policy is not configured correctly. The value must be either "solo", "additional", "default" or undefined (will be handled as "default")'
+        'AuthAdapter policy is not configured correctly. The value must be either "solo", "additional", "default" or undefined (will be handled as "default")',
       );
     }
     if (typeof adapter.validateAuthData === 'function') {
@@ -98,7 +103,7 @@ function authDataValidator(provider, adapter, appIds, options) {
     ) {
       throw new Parse.Error(
         Parse.Error.OTHER_CAUSE,
-        'Adapter is not configured. Implement either validateAuthData or all of the following: validateSetUp, validateLogin and validateUpdate'
+        'Adapter is not configured. Implement either validateAuthData or all of the following: validateSetUp, validateLogin and validateUpdate',
       );
     }
     // When masterKey is detected, we should trigger a logged in user
@@ -142,7 +147,7 @@ function authDataValidator(provider, adapter, appIds, options) {
   };
 }
 
-function loadAuthAdapter(provider, authOptions) {
+function loadDefaultAdapter(provider, authOptions) {
   // providers are auth providers implemented by default
   let defaultAdapter = providers[provider];
   // authOptions can contain complete custom auth adapters or
@@ -156,13 +161,10 @@ function loadAuthAdapter(provider, authOptions) {
     defaultAdapter = oauth2;
   }
 
-  // Default provider not found and a custom auth provider was not provided
-  if (!defaultAdapter && !providerOptions) {
-    return;
-  }
+  if (!defaultAdapter)
+    return null;
 
-  const adapter =
-    defaultAdapter instanceof AuthAdapter ? defaultAdapter : Object.assign({}, defaultAdapter);
+  const adapter = defaultAdapter instanceof AuthAdapter ? defaultAdapter : Object.assign({}, defaultAdapter);
   const keys = [
     'validateAuthData',
     'validateAppId',
@@ -185,19 +187,30 @@ function loadAuthAdapter(provider, authOptions) {
       adapter[key] = null;
     }
   });
+
+  return adapter;
+}
+
+function loadAuthAdapter(provider, authOptions) {
   const appIds = providerOptions ? providerOptions.appIds : undefined;
+  let adapter;
 
   // Try the configuration methods
   if (providerOptions) {
     const optionalAdapter = loadAdapter(providerOptions, undefined, providerOptions);
     if (optionalAdapter) {
-      keys.forEach(key => {
-        if (optionalAdapter[key]) {
-          adapter[key] = optionalAdapter[key];
-        }
-      });
+      adapter = optionalAdapter;
     }
   }
+
+  if (!adapter) {
+    adapter = loadDefaultAdapter(provider, authOptions);
+  }
+
+  if (!adapter && !providerOptions) {
+    return;
+  }
+
   if (adapter.validateOptions) {
     adapter.validateOptions(providerOptions);
   }
@@ -205,18 +218,20 @@ function loadAuthAdapter(provider, authOptions) {
   return { adapter, appIds, providerOptions };
 }
 
-module.exports = function (authOptions = {}, enableAnonymousUsers = true) {
+module.exports = function(authOptions = {}, enableAnonymousUsers = true) {
   let _enableAnonymousUsers = enableAnonymousUsers;
-  const setEnableAnonymousUsers = function (enable) {
+  const setEnableAnonymousUsers = function(enable) {
     _enableAnonymousUsers = enable;
   };
   // To handle the test cases on configuration
-  const getValidatorForProvider = function (provider) {
+  const getValidatorForProvider = function(provider) {
     if (provider === 'anonymous' && !_enableAnonymousUsers) {
       return { validator: undefined };
     }
     const authAdapter = loadAuthAdapter(provider, authOptions);
-    if (!authAdapter) { return; }
+    if (!authAdapter) {
+      return;
+    }
     const { adapter, appIds, providerOptions } = authAdapter;
     return { validator: authDataValidator(provider, adapter, appIds, providerOptions), adapter };
   };
@@ -250,7 +265,7 @@ module.exports = function (authOptions = {}, enableAnonymousUsers = true) {
             authData[provider] = result;
           }
         }
-      })
+      }),
     );
   };
 
