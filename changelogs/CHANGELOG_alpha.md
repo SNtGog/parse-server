@@ -1,3 +1,45 @@
+## [8.2.3-alpha.1](https://github.com/parse-community/parse-server/compare/8.2.2...8.2.3-alpha.1) (2025-07-13)
+
+
+### Bug Fixes
+
+* MongoDB aggregation pipeline with `$dateSubtract` from `$$NOW` returns no results ([#9822](https://github.com/parse-community/parse-server/issues/9822)) ([847a274](https://github.com/parse-community/parse-server/commit/847a274cdb8c22f8e0fc249162e5e2c9e29a594a))
+
+## [8.2.2-alpha.1](https://github.com/parse-community/parse-server/compare/8.2.1...8.2.2-alpha.1) (2025-07-10)
+
+
+### Bug Fixes
+
+* Data schema exposed via GraphQL API public introspection (GHSA-48q3-prgv-gm4w) ([#9819](https://github.com/parse-community/parse-server/issues/9819)) ([c58b2eb](https://github.com/parse-community/parse-server/commit/c58b2eb6eb48af9d3c2e69b4829810a021347b40))
+
+## [8.2.1-alpha.2](https://github.com/parse-community/parse-server/compare/8.2.1-alpha.1...8.2.1-alpha.2) (2025-05-14)
+
+
+### Performance Improvements
+
+* Remove saving Parse Cloud Job request parameters in internal collection `_JobStatus` ([#8343](https://github.com/parse-community/parse-server/issues/8343)) ([e98733c](https://github.com/parse-community/parse-server/commit/e98733cbac9451521a3acc388d2f9d29eb4610e0))
+
+## [8.2.1-alpha.1](https://github.com/parse-community/parse-server/compare/8.2.0...8.2.1-alpha.1) (2025-05-03)
+
+
+### Bug Fixes
+
+* `Parse.Query.containedIn` and `matchesQuery` do not work with nested objects ([#9738](https://github.com/parse-community/parse-server/issues/9738)) ([0db3a6f](https://github.com/parse-community/parse-server/commit/0db3a6ff27a129427770e314a792cc586e4255b5))
+
+# [8.2.0-alpha.1](https://github.com/parse-community/parse-server/compare/8.1.1-alpha.1...8.2.0-alpha.1) (2025-04-15)
+
+
+### Features
+
+* Add TypeScript definitions ([#9693](https://github.com/parse-community/parse-server/issues/9693)) ([e86718f](https://github.com/parse-community/parse-server/commit/e86718fc59c7c8e6f3c6abd0feb7d1a68ca76c23))
+
+## [8.1.1-alpha.1](https://github.com/parse-community/parse-server/compare/8.1.0...8.1.1-alpha.1) (2025-04-07)
+
+
+### Performance Improvements
+
+* Add details to error message in `Parse.Query.aggregate` ([#9689](https://github.com/parse-community/parse-server/issues/9689)) ([9de6999](https://github.com/parse-community/parse-server/commit/9de6999e257d839b68bbca282447777edfdb1ddf))
+
 # [8.1.0-alpha.4](https://github.com/parse-community/parse-server/compare/8.1.0-alpha.3...8.1.0-alpha.4) (2025-04-01)
 
 
