@@ -1,5 +1,7 @@
 const Parse = require('parse/node');
 import { isDeepStrictEqual } from 'util';
+import _ from 'lodash';
+import deepDiff from 'deep-diff';
 import { getRequestObject, resolveError } from './triggers';
 import { logger } from './logger';
 import { LRUCache as LRU } from 'lru-cache';
@@ -417,16 +419,58 @@ Auth.prototype._getAllRolesNamesForRoleIds = function (roleIDs, names = [], quer
     });
 };
 
+async function getFinalOriginalObject(req, originalObject, user, isUpdateOp, foundUser) {
+  let finalOriginalObject = originalObject;
+
+  if (foundUser && !finalOriginalObject && !isUpdateOp) {
+    finalOriginalObject = Parse.User.fromJSON({ className: '_User', ...foundUser });
+  }
+
+  if (isUpdateOp && user && user.id) {
+    try {
+      const query = await RestQuery({
+        method: RestQuery.Method.get,
+        config: req.config,
+        auth: Auth.master(req.config),
+        className: '_User',
+        restWhere: { objectId: user.id },
+        runBeforeFind: false,
+        runAfterFind: false,
+      });
+      const result = await query.execute();
+      if (result.results && result.results.length > 0) {
+        const userObj = Parse.User.fromJSON({ className: '_User', ...result.results[0] });
+        finalOriginalObject = userObj;
+      } else {
+        await user.fetch({ useMasterKey: true });
+        finalOriginalObject = user;
+      }
+    } catch (e) {
+      await user.fetch({ useMasterKey: true });
+      finalOriginalObject = user;
+    }
+  } else if (isUpdateOp && !finalOriginalObject && user) {
+    finalOriginalObject = user;
+  }
+
+  return finalOriginalObject;
+}
+
 const findUsersWithAuthData = async (config, authData, beforeFind) => {
   const providers = Object.keys(authData);
 
   const queries = await Promise.all(
     providers.map(async provider => {
       const providerAuthData = authData[provider];
+      if (!providerAuthData) {
+        return null;
+      }
 
-      const adapter = config.authDataManager.getValidatorForProvider(provider)?.adapter;
-      if (beforeFind && typeof adapter?.beforeFind === 'function') {
-        await adapter.beforeFind(providerAuthData);
+      if (beforeFind) {
+        const adapter = config.authDataManager.getValidatorForProvider(provider)?.adapter;
+        if (typeof adapter?.beforeFind === 'function') {
+         await adapter.beforeFind(providerAuthData);
+       }
       }
 
       if (!providerAuthData?.id) {
@@ -520,25 +564,26 @@ const checkIfUserHasProvidedConfiguredProvidersForLogin = (
 // Validate each authData step-by-step and return the provider responses
 const handleAuthDataValidation = async (authData, req, foundUser) => {
   let user;
+  const isUpdateOp = (req.query && req.query.objectId) ||
+    (req.auth && req.auth.user && !foundUser);
+
   if (foundUser) {
     user = Parse.User.fromJSON({ className: '_User', ...foundUser });
-    // Find user by session and current objectId; only pass user if it's the current user or master key is provided
-  } else if (
-    (req.auth &&
-      req.auth.user &&
-      typeof req.getUserId === 'function' &&
-      req.getUserId() === req.auth.user.id) ||
-    (req.auth && req.auth.isMaster && typeof req.getUserId === 'function' && req.getUserId())
-  ) {
+  } else if (req.auth && req.auth.user) {
     user = new Parse.User();
-    user.id = req.auth.isMaster ? req.getUserId() : req.auth.user.id;
-    await user.fetch({ useMasterKey: true });
+    user.id = req.auth.user.id;
+  } else if (req.auth && req.auth.isMaster && typeof req.getUserId === 'function' && req.getUserId()) {
+    user = new Parse.User();
+    user.id = req.getUserId();
   }
 
-  const { updatedObject } = req.buildParseObjects();
-  const requestObject = getRequestObject(undefined, req.auth, updatedObject, user, req.config);
-  // Perform validation as step-by-step pipeline for better error consistency
-  // and also to avoid to trigger a provider (like OTP SMS) if another one fails
+  const { originalObject, updatedObject } = req.buildParseObjects();
+  const finalOriginalObject = await getFinalOriginalObject(req, originalObject, user, isUpdateOp, foundUser);
+
+  const requestObject = getRequestObject(undefined, req.auth, updatedObject, finalOriginalObject, req.config);
+  if (user && isUpdateOp && req.auth && req.auth.user && !req.auth.isMaster) {
+    requestObject.user = user;
+  }
   const acc = { authData: {}, authDataResponse: {} };
   const authKeys = Object.keys(authData).sort();
   for (const provider of authKeys) {
@@ -601,6 +646,80 @@ const handleAuthDataValidation = async (authData, req, foundUser) => {
   return acc;
 };
 
+const subsetEqual = (prev, next) => {
+  if (prev === next) return true;
+  if (prev == null || next == null) return false;
+
+  const tp = typeof prev;
+  const tn = typeof next;
+  if (tn !== 'object' || tp !== 'object') return prev === next;
+
+  const differences = deepDiff(prev, next);
+
+  if (!differences) {
+    return true;
+  }
+
+  for (const diff of differences) {
+    if (diff.kind === 'N' || diff.kind === 'E') {
+      return false;
+    }
+    if (diff.kind === 'A') {
+      if (diff.item && (diff.item.kind === 'N' || diff.item.kind === 'E')) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+const diffAuthData = (current = {}, incoming = {}) => {
+  const changed = {};
+  const unlink = {};
+  const unchanged = {};
+
+  const providers = _.union(Object.keys(current), Object.keys(incoming));
+
+  for (const p of providers) {
+    const prev = current[p];
+    const next = incoming[p];
+
+    if (next === null) {
+      unlink[p] = true;
+      continue;
+    }
+
+    if (_.isUndefined(next)) {
+      if (!_.isUndefined(prev)) unchanged[p] = prev;
+      continue;
+    }
+
+    if (_.isUndefined(prev)) {
+      changed[p] = next;
+      continue;
+    }
+
+    const prevId = prev?.id;
+    const nextId = next?.id;
+    if (prevId && nextId && prevId === nextId) {
+      unchanged[p] = prev;
+      continue;
+    }
+
+    const differences = deepDiff(prev, next);
+
+    if (!differences) {
+      unchanged[p] = prev;
+    } else if (subsetEqual(prev, next)) {
+      unchanged[p] = prev;
+    } else {
+      changed[p] = next;
+    }
+  }
+  return { changed, unlink, unchanged };
+};
+
 module.exports = {
   Auth,
   master,
@@ -614,4 +733,6 @@ module.exports = {
   hasMutatedAuthData,
   checkIfUserHasProvidedConfiguredProvidersForLogin,
   handleAuthDataValidation,
+  subsetEqual,
+  diffAuthData
 };

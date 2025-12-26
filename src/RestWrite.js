@@ -526,7 +526,9 @@ RestWrite.prototype.ensureUniqueAuthDataId = async function () {
     key => this.data.authData[key] && this.data.authData[key].id
   );
 
-  if (!hasAuthDataId) { return; }
+  if (!hasAuthDataId) {
+    return;
+  }
 
   const r = await Auth.findUsersWithAuthData(this.config, this.data.authData);
   const results = this.filteredObjectsByACL(r);
@@ -540,21 +542,77 @@ RestWrite.prototype.ensureUniqueAuthDataId = async function () {
   }
 };
 
-RestWrite.prototype.handleAuthData = async function (authData) {
-  const withoutUnlinked = {};
-  for (const provider of Object.keys(authData)) {
-    if (authData[provider] === null || authData[provider] === undefined) {
-      continue;
+async function getBaseAuthDataForDiff(req) {
+  if (req.auth && req.auth.user) {
+    try {
+      const user = new Parse.User();
+      user.id = req.auth.user.id;
+      await user.fetch({ useMasterKey: true });
+      return user.get('authData') || {};
+    } catch (e) {
+      if (req.originalData && req.originalData.authData !== undefined) {
+        return req.originalData.authData || {};
+      }
+      return {};
     }
-    withoutUnlinked[provider] = authData[provider];
+  } else if (req.originalData && req.originalData.authData !== undefined) {
+    return req.originalData.authData || {};
+  } else if (req.auth && req.auth.user) {
+    try {
+      const user = new Parse.User();
+      user.id = req.auth.user.id;
+      await user.fetch({ useMasterKey: true });
+      return user.get('authData') || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  return {};
+}
+
+RestWrite.prototype.handleAuthData = async function (authData) {
+  let authDataForLookup = authData;
+  let diff = null;
+
+  let baseAuthDataForDiff = undefined;
+  const isUpdateOp = (this.query && this.query.objectId) || 
+                     (this.auth && this.auth.user && this.originalData);
+  if (isUpdateOp) {
+    baseAuthDataForDiff = await getBaseAuthDataForDiff(this);
+    diff = Auth.diffAuthData(baseAuthDataForDiff || {}, authData || {});
+    authDataForLookup = diff.changed || {};
+  } else if (this.auth && this.auth.user && this.originalData) {
+    baseAuthDataForDiff = await getBaseAuthDataForDiff(this);
+    diff = Auth.diffAuthData(baseAuthDataForDiff || {}, authData || {});
+    authDataForLookup = diff.changed || {};
   }
 
-  const r = await Auth.findUsersWithAuthData(this.config, withoutUnlinked, true);
-  const results = this.filteredObjectsByACL(r);
+  const withoutUnlinked = {};
+  for (const provider of Object.keys(authDataForLookup)) {
+    if (authDataForLookup[provider] === null || authDataForLookup[provider] === undefined) {
+      continue;
+    }
+    withoutUnlinked[provider] = authDataForLookup[provider];
+  }
+
+  let results = [];
+  if (Object.keys(withoutUnlinked).length > 0) {
+    const r = await Auth.findUsersWithAuthData(this.config, withoutUnlinked, true);
+    results = this.filteredObjectsByACL(r);
+  }
 
   const userId = this.getUserId();
   const userResult = results[0];
-  const foundUserIsNotCurrentUser = userId && userResult && userId !== userResult.objectId;
+  const isCreateOperation = !this.query || !this.query.objectId;
+  const foundUserMatchesAuthUser = isCreateOperation && 
+                                   this.auth && 
+                                   this.auth.user && 
+                                   userResult && 
+                                   this.auth.user.id === userResult.objectId;
+  const foundUserIsNotCurrentUser = !foundUserMatchesAuthUser && 
+                                    userId && 
+                                    userResult && 
+                                    userId !== userResult.objectId;
 
   if (results.length > 1 || foundUserIsNotCurrentUser) {
     // To avoid https://github.com/parse-community/parse-server/security/advisories/GHSA-8w3j-g983-8jh5
@@ -563,14 +621,79 @@ RestWrite.prototype.handleAuthData = async function (authData) {
     throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED, 'this auth is already used');
   }
 
-  // No user found with provided authData we need to validate
   if (!results.length) {
+    let baseAuthData = baseAuthDataForDiff !== undefined ? baseAuthDataForDiff : {};
+    if (baseAuthDataForDiff === undefined) {
+      baseAuthData = await getBaseAuthDataForDiff(this);
+    }
+
+    const hasUserContext = (this.query && this.query.objectId) || this.auth.user;
+    if (hasUserContext) {
+      const { changed, unlink } = Auth.diffAuthData(baseAuthData, authData || {});
+
+      // For providers with code but without id, merge id from baseAuthData
+      // This allows validation to work correctly (getUserFromAccessToken needs id for URL)
+      // while still triggering validation (diffAuthData detects code as change)
+      for (const provider of Object.keys(changed)) {
+        const providerAuthData = changed[provider];
+        if (providerAuthData && providerAuthData.code && !providerAuthData.id) {
+          const baseProviderAuthData = baseAuthData[provider];
+          if (baseProviderAuthData && baseProviderAuthData.id) {
+            changed[provider] = { ...providerAuthData, id: baseProviderAuthData.id };
+          }
+        }
+      }
+
+      // Only validate if there are actual changes
+      // If changed is empty, it means no providers were modified, so skip validation
+      const hasChanges = Object.keys(changed).length > 0;
+      const hasUnlink = Object.keys(unlink).length > 0;
+
+      const isLinkingNewProvider = !hasChanges && Object.keys(authData || {}).some(
+        provider => !baseAuthData[provider] && authData[provider] !== null
+      );
+
+      const needsValidation = hasChanges || isLinkingNewProvider || hasUnlink;
+
+      if (needsValidation) {
+        const authDataToValidate = hasChanges ? changed : authData || {};
+
+        const { authData: validatedAuthData, authDataResponse } = await Auth.handleAuthDataValidation(
+          authDataToValidate,
+          this
+        );
+        this.authDataResponse = authDataResponse;
+
+        const newAuthData = { ...baseAuthData };
+
+        Object.keys(unlink).forEach(provider => {
+          newAuthData[provider] = null;
+        });
+
+        Object.keys(validatedAuthData || {}).forEach(provider => {
+          const validated = validatedAuthData[provider];
+          const existing = newAuthData[provider];
+          if (validated && typeof validated === 'object' && !Array.isArray(validated) &&
+              existing && typeof existing === 'object' && !Array.isArray(existing) && existing !== null) {
+            newAuthData[provider] = { ...existing, ...validated };
+          } else {
+            newAuthData[provider] = validated;
+          }
+        });
+
+        this.data.authData = newAuthData;
+      } else {
+        this.data.authData = baseAuthData;
+      }
+      return;
+    }
+
+    // No existing user context: validate full incoming authData (login / signup).
     const { authData: validatedAuthData, authDataResponse } = await Auth.handleAuthDataValidation(
       authData,
       this
     );
     this.authDataResponse = authDataResponse;
-    // Replace current authData by the new validated one
     this.data.authData = validatedAuthData;
     return;
   }
@@ -579,10 +702,12 @@ RestWrite.prototype.handleAuthData = async function (authData) {
   if (results.length === 1) {
     this.storage.authProvider = Object.keys(authData).join(',');
 
-    const { hasMutatedAuthData, mutatedAuthData } = Auth.hasMutatedAuthData(
-      authData,
-      userResult.authData
-    );
+    // Recompute the delta between the stored authData and what the client
+    // sent for the found user; this is the authoritative comparison for
+    // deciding what needs validation.
+    const userAuthData = userResult.authData || {};
+    const { changed: mutatedAuthData } = Auth.diffAuthData(userAuthData, authData || {});
+    const hasMutatedAuthData = Object.keys(mutatedAuthData).length !== 0;
 
     const isCurrentUserLoggedOrMaster =
       (this.auth && this.auth.user && this.auth.user.id === userResult.objectId) ||
@@ -620,21 +745,28 @@ RestWrite.prototype.handleAuthData = async function (authData) {
         );
       }
 
-      // Prevent validating if no mutated data detected on update
-      if (!hasMutatedAuthData && isCurrentUserLoggedOrMaster) {
-        return;
-      }
+      // Determine if this is a login (no query) or update (has query)
+      const isLoginOperation = !this.query || !this.query.objectId;
 
-      // Force to validate all provided authData on login
-      // on update only validate mutated ones
-      if (hasMutatedAuthData || !this.config.allowExpiredAuthDataToken) {
-        const res = await Auth.handleAuthDataValidation(
-          isLogin ? authData : mutatedAuthData,
-          this,
-          userResult
-        );
+      // On login, always validate authData to ensure tokens are up-to-date
+      // On update (link/unlink), only validate if data actually changed
+      if (isLoginOperation) {
+        // Always validate on login to update tokens even if they appear unchanged
+        const res = await Auth.handleAuthDataValidation(authData, this, userResult);
         this.data.authData = res.authData;
         this.authDataResponse = res.authDataResponse;
+      } else if (isCurrentUserLoggedOrMaster) {
+        // This is an update operation (link/unlink)
+        // Prevent validating if no mutated data detected
+        if (!hasMutatedAuthData) {
+          return;
+        }
+        // Validate only mutated providers on update
+        if (hasMutatedAuthData || !this.config.allowExpiredAuthDataToken) {
+          const res = await Auth.handleAuthDataValidation(mutatedAuthData, this, userResult);
+          this.data.authData = res.authData;
+          this.authDataResponse = res.authDataResponse;
+        }
       }
 
       // IF we are in login we'll skip the database operation / beforeSave / afterSave etc...
@@ -642,9 +774,13 @@ RestWrite.prototype.handleAuthData = async function (authData) {
       // We are supposed to have a response only on LOGIN with authData, so we skip those
       // If we're not logging in, but just updating the current user, we can safely skip that part
       if (this.response) {
-        // Assign the new authData in the response
-        Object.keys(mutatedAuthData).forEach(provider => {
-          this.response.response.authData[provider] = mutatedAuthData[provider];
+        // Assign the validated authData to the response (use this.data.authData which contains validated data)
+        // For login, always use validated authData; for update, use mutatedAuthData if available
+        const authDataToUpdate =
+          isLoginOperation && this.data.authData ? this.data.authData : mutatedAuthData;
+
+        Object.keys(authDataToUpdate || {}).forEach(provider => {
+          this.response.response.authData[provider] = authDataToUpdate[provider];
         });
 
         // Run the DB update directly, as 'master' only if authData contains some keys
@@ -841,7 +977,9 @@ RestWrite.prototype._validateEmail = function () {
 };
 
 RestWrite.prototype._validatePasswordPolicy = function () {
-  if (!this.config.passwordPolicy) { return Promise.resolve(); }
+  if (!this.config.passwordPolicy) {
+    return Promise.resolve();
+  }
   return this._validatePasswordRequirements().then(() => {
     return this._validatePasswordHistory();
   });
@@ -875,18 +1013,20 @@ RestWrite.prototype._validatePasswordRequirements = function () {
   if (this.config.passwordPolicy.doNotAllowUsername === true) {
     if (this.data.username) {
       // username is not passed during password reset
-      if (this.data.password.indexOf(this.data.username) >= 0)
-      { return Promise.reject(new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)); }
+      if (this.data.password.indexOf(this.data.username) >= 0) {
+        return Promise.reject(new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError));
+      }
     } else {
       // retrieve the User object using objectId during password reset
       return this.config.database.find('_User', { objectId: this.objectId() }).then(results => {
         if (results.length != 1) {
           throw undefined;
         }
-        if (this.data.password.indexOf(results[0].username) >= 0)
-        { return Promise.reject(
-          new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)
-        ); }
+        if (this.data.password.indexOf(results[0].username) >= 0) {
+          return Promise.reject(
+            new Parse.Error(Parse.Error.VALIDATION_ERROR, containsUsernameError)
+          );
+        }
         return Promise.resolve();
       });
     }
@@ -910,19 +1050,21 @@ RestWrite.prototype._validatePasswordHistory = function () {
         }
         const user = results[0];
         let oldPasswords = [];
-        if (user._password_history)
-        { oldPasswords = _.take(
-          user._password_history,
-          this.config.passwordPolicy.maxPasswordHistory - 1
-        ); }
+        if (user._password_history) {
+          oldPasswords = _.take(
+            user._password_history,
+            this.config.passwordPolicy.maxPasswordHistory - 1
+          );
+        }
         oldPasswords.push(user.password);
         const newPassword = this.data.password;
         // compare the new password hash with all old password hashes
         const promises = oldPasswords.map(function (hash) {
           return passwordCrypto.compare(newPassword, hash).then(result => {
-            if (result)
-            // reject if there is a match
-            { return Promise.reject('REPEAT_PASSWORD'); }
+            if (result) {
+              // reject if there is a match
+              return Promise.reject('REPEAT_PASSWORD');
+            }
             return Promise.resolve();
           });
         });
@@ -932,14 +1074,15 @@ RestWrite.prototype._validatePasswordHistory = function () {
             return Promise.resolve();
           })
           .catch(err => {
-            if (err === 'REPEAT_PASSWORD')
-            // a match was found
-            { return Promise.reject(
-              new Parse.Error(
-                Parse.Error.VALIDATION_ERROR,
-                `New password should not be the same as last ${this.config.passwordPolicy.maxPasswordHistory} passwords.`
-              )
-            ); }
+            if (err === 'REPEAT_PASSWORD') {
+              // a match was found
+              return Promise.reject(
+                new Parse.Error(
+                  Parse.Error.VALIDATION_ERROR,
+                  `New password should not be the same as last ${this.config.passwordPolicy.maxPasswordHistory} passwords.`
+                )
+              );
+            }
             throw err;
           });
       });
@@ -973,10 +1116,16 @@ RestWrite.prototype.createSessionTokenIfNeeded = async function () {
     // Get verification conditions which can be booleans or functions; the purpose of this async/await
     // structure is to avoid unnecessarily executing subsequent functions if previous ones fail in the
     // conditional statement below, as a developer may decide to execute expensive operations in them
-    const verifyUserEmails = async () => this.config.verifyUserEmails === true || (typeof this.config.verifyUserEmails === 'function' && await Promise.resolve(this.config.verifyUserEmails(request)) === true);
-    const preventLoginWithUnverifiedEmail = async () => this.config.preventLoginWithUnverifiedEmail === true || (typeof this.config.preventLoginWithUnverifiedEmail === 'function' && await Promise.resolve(this.config.preventLoginWithUnverifiedEmail(request)) === true);
+    const verifyUserEmails = async () =>
+      this.config.verifyUserEmails === true ||
+      (typeof this.config.verifyUserEmails === 'function' &&
+        (await Promise.resolve(this.config.verifyUserEmails(request))) === true);
+    const preventLoginWithUnverifiedEmail = async () =>
+      this.config.preventLoginWithUnverifiedEmail === true ||
+      (typeof this.config.preventLoginWithUnverifiedEmail === 'function' &&
+        (await Promise.resolve(this.config.preventLoginWithUnverifiedEmail(request))) === true);
     // If verification is required
-    if (await verifyUserEmails() && await preventLoginWithUnverifiedEmail()) {
+    if ((await verifyUserEmails()) && (await preventLoginWithUnverifiedEmail())) {
       this.storage.rejectSignup = true;
       return;
     }
@@ -1462,12 +1611,22 @@ RestWrite.prototype.runDatabaseOperation = function () {
     }
   }
 
+  // For _User updates, we need either:
+  // 1. auth.user is set (from sessionToken), OR
+  // 2. query.objectId is set (from PUT /users/:objectId) - this indicates an update operation
+  // The check for originalData is handled in handleAuthData where we need it for delta comparison
   if (this.className === '_User' && this.query && this.auth.isUnauthenticated()) {
-    throw createSanitizedError(
-      Parse.Error.SESSION_MISSING,
-      `Cannot modify user ${this.query.objectId}.`,
-      this.config
-    );
+    // If we have query.objectId, it means this is an update operation (PUT /users/:objectId)
+    // The sessionToken validation should have happened in middleware (handleParseSession)
+    // If we got here without auth.user, it means sessionToken was invalid or missing
+    // But we still need to check if originalData was loaded (which requires valid session or master key)
+    if (!this.originalData && this.query.objectId) {
+      throw createSanitizedError(
+        Parse.Error.SESSION_MISSING,
+        `Cannot modify user ${this.query.objectId}.`,
+        this.config
+      );
+    }
   }
 
   if (this.className === '_Product' && this.data.download) {
@@ -1750,6 +1909,14 @@ RestWrite.prototype.buildParseObjects = function () {
   const extraData = { className: this.className, objectId: this.query?.objectId };
   let originalObject;
   if (this.query && this.query.objectId) {
+    originalObject = triggers.inflate(extraData, this.originalData);
+  } else if (this.originalData && this.className === '_User') {
+    // For _User updates via sessionToken (no query.objectId), use originalData if available
+    // This ensures originalObject is set for adapters that need it (e.g., MFA)
+    // Ensure we have objectId for inflate
+    if (!extraData.objectId && this.auth && this.auth.user) {
+      extraData.objectId = this.auth.user.id;
+    }
     originalObject = triggers.inflate(extraData, this.originalData);
   }
 
