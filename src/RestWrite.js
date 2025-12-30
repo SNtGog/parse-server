@@ -479,6 +479,28 @@ RestWrite.prototype.validateAuthData = function () {
 
   var providers = Object.keys(authData);
   if (providers.length > 0) {
+    // Validate provider names early to prevent injection attacks
+    for (const provider of providers) {
+      if (typeof provider !== 'string' || provider.length < 1 || provider.length > 64) {
+        throw new Parse.Error(
+          Parse.Error.INVALID_KEY_NAME,
+          `Invalid provider name: ${provider}. Provider names must be 1-64 characters long.`
+        );
+      }
+      if (provider === '__proto__' || provider === 'constructor' || provider === 'prototype') {
+        throw new Parse.Error(
+          Parse.Error.INVALID_KEY_NAME,
+          `Invalid provider name: ${provider}. Provider names cannot be reserved JavaScript properties.`
+        );
+      }
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(provider)) {
+        throw new Parse.Error(
+          Parse.Error.INVALID_KEY_NAME,
+          `Invalid provider name: ${provider}. Provider names must start with a letter and contain only alphanumeric characters and underscores.`
+        );
+      }
+    }
+
     const canHandleAuthData = providers.some(provider => {
       const providerAuthData = authData[provider] || {};
       return !!Object.keys(providerAuthData).length;
@@ -566,7 +588,7 @@ RestWrite.prototype.handleAuthData = async function (authData) {
   let diff = null;
 
   let baseAuthDataForDiff = undefined;
-  const isUpdateOp = (this.query && this.query.objectId) || 
+  const isUpdateOp = (this.query && this.query.objectId) ||
                      (this.auth && this.auth.user && this.originalData);
   if (isUpdateOp) {
     baseAuthDataForDiff = await getBaseAuthDataForDiff(this);
@@ -591,14 +613,14 @@ RestWrite.prototype.handleAuthData = async function (authData) {
   const userId = this.getUserId();
   const userResult = results[0];
   const isCreateOperation = !this.query || !this.query.objectId;
-  const foundUserMatchesAuthUser = isCreateOperation && 
-                                   this.auth && 
-                                   this.auth.user && 
-                                   userResult && 
+  const foundUserMatchesAuthUser = isCreateOperation &&
+                                   this.auth &&
+                                   this.auth.user &&
+                                   userResult &&
                                    this.auth.user.id === userResult.objectId;
-  const foundUserIsNotCurrentUser = !foundUserMatchesAuthUser && 
-                                    userId && 
-                                    userResult && 
+  const foundUserIsNotCurrentUser = !foundUserMatchesAuthUser &&
+                                    userId &&
+                                    userResult &&
                                     userId !== userResult.objectId;
 
   if (results.length > 1 || foundUserIsNotCurrentUser) {
@@ -636,26 +658,22 @@ RestWrite.prototype.handleAuthData = async function (authData) {
       const hasChanges = Object.keys(changed).length > 0;
       const hasUnlink = Object.keys(unlink).length > 0;
 
-      const isLinkingNewProvider = !hasChanges && Object.keys(authData || {}).some(
-        provider => !baseAuthData[provider] && authData[provider] !== null
-      );
+      const newAuthData = { ...baseAuthData };
 
-      const needsValidation = hasChanges || isLinkingNewProvider || hasUnlink;
-
-      if (needsValidation) {
-        const authDataToValidate = hasChanges ? changed : authData || {};
-
-        const { authData: validatedAuthData, authDataResponse } = await Auth.handleAuthDataValidation(
-          authDataToValidate,
-          this
-        );
-        this.authDataResponse = authDataResponse;
-
-        const newAuthData = { ...baseAuthData };
-
+      // Apply unlink operations (no validation needed - handleAuthDataValidation skips null)
+      if (hasUnlink) {
         Object.keys(unlink).forEach(provider => {
           newAuthData[provider] = null;
         });
+      }
+
+      // Validate only if there are actual changes (not unlink-only)
+      if (hasChanges) {
+        const { authData: validatedAuthData, authDataResponse } = await Auth.handleAuthDataValidation(
+          changed,
+          this
+        );
+        this.authDataResponse = authDataResponse;
 
         Object.keys(validatedAuthData || {}).forEach(provider => {
           const validated = validatedAuthData[provider];
@@ -667,11 +685,9 @@ RestWrite.prototype.handleAuthData = async function (authData) {
             newAuthData[provider] = validated;
           }
         });
-
-        this.data.authData = newAuthData;
-      } else {
-        this.data.authData = baseAuthData;
       }
+
+      this.data.authData = newAuthData;
       return;
     }
 
@@ -748,13 +764,11 @@ RestWrite.prototype.handleAuthData = async function (authData) {
         if (!hasMutatedAuthData && this.config.allowExpiredAuthDataToken) {
           return;
         }
-        // Validate if data changed OR if expired tokens are not allowed
-        if (hasMutatedAuthData || !this.config.allowExpiredAuthDataToken) {
-          const dataToValidate = hasMutatedAuthData ? mutatedAuthData : authData;
-          const res = await Auth.handleAuthDataValidation(dataToValidate, this, userResult);
-          this.data.authData = res.authData;
-          this.authDataResponse = res.authDataResponse;
-        }
+
+        const dataToValidate = hasMutatedAuthData ? mutatedAuthData : authData;
+        const res = await Auth.handleAuthDataValidation(dataToValidate, this, userResult);
+        this.data.authData = res.authData;
+        this.authDataResponse = res.authDataResponse;
       }
 
       // IF we are in login we'll skip the database operation / beforeSave / afterSave etc...

@@ -1856,6 +1856,211 @@ describe('AuthData Security Tests', () => {
         expect(error.code).toBeDefined();
       }
     });
+
+    it('should reject provider names with prototype pollution attempts', async () => {
+      mockFetch(mockGpgamesLogin());
+      const user = await Parse.User.logInWith('gpgames', {
+        authData: { id: MOCK_USER_ID, code: 'C1' },
+      });
+      const sessionToken = user.getSessionToken();
+
+      // Try to use constructor as provider name (enumerable by default)
+      try {
+        await user.save(
+          { authData: { constructor: { id: 'test' } } },
+          { sessionToken }
+        );
+        // If it doesn't throw, verify that constructor was not stored as malicious data
+        await user.fetch({ sessionToken });
+        const authData = user.get('authData');
+        // Constructor should not be in authData with our test data
+        // (either rejected or not configured, or stored but not as our test object)
+        if (authData && authData.constructor) {
+          const isOurTestData = typeof authData.constructor === 'object' && 
+                               authData.constructor.id === 'test';
+          expect(isOurTestData).toBe(false);
+        }
+      } catch (error) {
+        // Should reject with INVALID_KEY_NAME (either from validateAuthData or diffAuthData)
+        // If provider is not configured, may throw UNSUPPORTED_SERVICE, which is also acceptable
+        expect([Parse.Error.INVALID_KEY_NAME, Parse.Error.UNSUPPORTED_SERVICE]).toContain(error.code);
+        if (error.code === Parse.Error.INVALID_KEY_NAME) {
+          expect(error.message).toContain('Invalid provider name');
+        }
+      }
+
+      // Try to use prototype as provider name
+      try {
+        await user.save(
+          { authData: { prototype: { id: 'test' } } },
+          { sessionToken }
+        );
+        // If it doesn't throw, verify that prototype was not stored as malicious data
+        await user.fetch({ sessionToken });
+        const authData = user.get('authData');
+        // Prototype should not be in authData with our test data
+        // (either rejected or not configured, or stored but not as our test object)
+        if (authData && authData.prototype) {
+          const isOurTestData = typeof authData.prototype === 'object' && 
+                               authData.prototype.id === 'test';
+          expect(isOurTestData).toBe(false);
+        }
+      } catch (error) {
+        // Should reject with INVALID_KEY_NAME (either from validateAuthData or diffAuthData)
+        // If provider is not configured, may throw UNSUPPORTED_SERVICE, which is also acceptable
+        expect([Parse.Error.INVALID_KEY_NAME, Parse.Error.UNSUPPORTED_SERVICE]).toContain(error.code);
+        if (error.code === Parse.Error.INVALID_KEY_NAME) {
+          expect(error.message).toContain('Invalid provider name');
+        }
+      }
+
+      // Note: __proto__ is not enumerable by default in Object.keys(),
+      // so it won't be processed by diffAuthData. However, if it were
+      // enumerable (via Object.defineProperty with enumerable: true),
+      // it would be rejected by our validation. This is acceptable because
+      // normal object literals don't have enumerable __proto__.
+    });
+
+    it('should reject provider names with NoSQL injection attempts', async () => {
+      mockFetch(mockGpgamesLogin());
+      const user = await Parse.User.logInWith('gpgames', {
+        authData: { id: MOCK_USER_ID, code: 'C1' },
+      });
+      const sessionToken = user.getSessionToken();
+
+      // Try to use dots in provider name (NoSQL injection)
+      const maliciousProviders = [
+        'gpgames.id',
+        'gpgames.access_token',
+        'provider.name.field',
+        'test.test',
+      ];
+
+      for (const maliciousProvider of maliciousProviders) {
+        try {
+          await user.save(
+            { authData: { [maliciousProvider]: { id: 'test' } } },
+            { sessionToken }
+          );
+          fail(`Should have rejected provider name with dots: ${maliciousProvider}`);
+        } catch (error) {
+          expect(error.code).toBe(Parse.Error.INVALID_KEY_NAME);
+          expect(error.message).toContain('Invalid provider name');
+        }
+      }
+    });
+
+    it('should reject provider names with special characters', async () => {
+      mockFetch(mockGpgamesLogin());
+      const user = await Parse.User.logInWith('gpgames', {
+        authData: { id: MOCK_USER_ID, code: 'C1' },
+      });
+      const sessionToken = user.getSessionToken();
+
+      // Try various special characters
+      const maliciousProviders = [
+        'provider-name', // hyphen
+        'provider name', // space
+        'provider@name', // @
+        'provider#name', // #
+        'provider$name', // $
+        'provider[name]', // brackets
+        'provider{name}', // braces
+        'provider/name', // slash
+        'provider\\name', // backslash
+        'provider.name', // dot
+        '123provider', // starts with number
+        '', // empty string
+      ];
+
+      for (const maliciousProvider of maliciousProviders) {
+        try {
+          await user.save(
+            { authData: { [maliciousProvider]: { id: 'test' } } },
+            { sessionToken }
+          );
+          fail(`Should have rejected invalid provider name: ${maliciousProvider}`);
+        } catch (error) {
+          expect(error.code).toBe(Parse.Error.INVALID_KEY_NAME);
+          expect(error.message).toContain('Invalid provider name');
+        }
+      }
+    });
+
+    it('should accept valid provider names', async () => {
+      mockFetch(mockGpgamesLogin());
+      const user = await Parse.User.logInWith('gpgames', {
+        authData: { id: MOCK_USER_ID, code: 'C1' },
+      });
+      const sessionToken = user.getSessionToken();
+
+      // Valid provider names should work
+      const validProviders = [
+        'gpgames',
+        'instagram',
+        'provider_name',
+        'providerName',
+        'ProviderName',
+        'provider123',
+        'p',
+        'provider_name_123',
+      ];
+
+      for (const validProvider of validProviders) {
+        // Skip if provider is not configured (will fail with different error)
+        if (validProvider === 'gpgames' || validProvider === 'instagram') {
+          continue;
+        }
+
+        try {
+          await user.save(
+            { authData: { [validProvider]: { id: 'test' } } },
+            { sessionToken }
+          );
+          // Should not throw INVALID_KEY_NAME error
+          // May throw UNSUPPORTED_SERVICE if provider not configured, which is expected
+        } catch (error) {
+          // Should not be INVALID_KEY_NAME for valid provider names
+          expect(error.code).not.toBe(Parse.Error.INVALID_KEY_NAME);
+        }
+      }
+    });
+
+    it('should prevent injection when linking multiple providers', async () => {
+      mockFetch(mockGpgamesLogin());
+      const user = await Parse.User.logInWith('gpgames', {
+        authData: { id: MOCK_USER_ID, code: 'C1' },
+      });
+      const sessionToken = user.getSessionToken();
+
+      // Try to link malicious provider name
+      // Use constructor which should be enumerable
+      try {
+        await user.save(
+          {
+            authData: {
+              constructor: { id: 'test' },
+            },
+          },
+          { sessionToken }
+        );
+        // If it doesn't throw, verify that constructor was not stored
+        await user.fetch({ sessionToken });
+        const authData = user.get('authData');
+        // Constructor should not be in authData (either rejected or not configured)
+        const hasConstructor = authData && authData.constructor && 
+                              typeof authData.constructor === 'object' && 
+                              authData.constructor.id === 'test';
+        expect(hasConstructor).toBe(false);
+      } catch (error) {
+        // Should reject with INVALID_KEY_NAME (either from validateAuthData or diffAuthData)
+        // If provider is not configured, may throw UNSUPPORTED_SERVICE, which is also acceptable
+        expect([Parse.Error.INVALID_KEY_NAME, Parse.Error.UNSUPPORTED_SERVICE]).toContain(error.code);
+        if (error.code === Parse.Error.INVALID_KEY_NAME) {
+          expect(error.message).toContain('Invalid provider name');
+        }
+      }
+    });
   });
 });
 

@@ -645,50 +645,93 @@ const handleAuthDataValidation = async (authData, req, foundUser) => {
   return acc;
 };
 
-const subsetEqual = (prev, next) => {
-  if (prev === next) return true;
-  if (prev == null || next == null) return false;
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
-  const tp = typeof prev;
-  const tn = typeof next;
-  if (tn !== 'object' || tp !== 'object') return prev === next;
-
-  if (Array.isArray(prev) && Array.isArray(next)) {
-    if (next.length > prev.length) return false;
-    for (let i = 0; i < next.length; i++) {
-      if (!subsetEqual(prev[i], next[i])) {
-        return false;
-      }
-    }
-    return true;
+const toRecord = (v) => {
+  const out = Object.create(null);
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const k of Object.keys(v)) {
+    out[k] = v[k];
   }
+  return out;
+};
 
-  if (Array.isArray(prev) !== Array.isArray(next)) {
+const assertSafeProviderKey = (p) => {
+  if (p === '__proto__' || p === 'constructor' || p === 'prototype') {
+    throw new Parse.Error(
+      Parse.Error.INVALID_KEY_NAME,
+      `Invalid provider name: ${p}. Provider names cannot be reserved JavaScript properties.`
+    );
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(p)) {
+    throw new Parse.Error(
+      Parse.Error.INVALID_KEY_NAME,
+      `Invalid provider name: ${p}. Provider names must start with a letter and contain only alphanumeric characters and underscores.`
+    );
+  }
+};
+
+const assertProviderData = (x) => {
+  if (x === null || typeof x === 'undefined') return;
+  if (!x || typeof x !== 'object' || Array.isArray(x)) {
+    throw new Parse.Error(
+      Parse.Error.VALIDATION_ERROR,
+      'Invalid provider data.'
+    );
+  }
+  if (Object.keys(x).length > 32) {
+    throw new Parse.Error(
+      Parse.Error.VALIDATION_ERROR,
+      'Provider data too large.'
+    );
+  }
+  if (typeof x.id !== 'undefined' && (typeof x.id !== 'string' || x.id.length > 256)) {
+    throw new Parse.Error(
+      Parse.Error.VALIDATION_ERROR,
+      'Invalid provider id.'
+    );
+  }
+};
+
+const shallowStableEqual = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) || Array.isArray(b)) {
     return false;
   }
-
-  for (const key in next) {
-    if (!(key in prev)) {
-      return false;
-    }
-    if (!subsetEqual(prev[key], next[key])) {
-      return false;
-    }
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    if (!hasOwn(b, k)) return false;
+    if (a[k] !== b[k]) return false;
   }
-
   return true;
-}
+};
 
 const diffAuthData = (current = {}, incoming = {}) => {
-  const changed = {};
-  const unlink = {};
-  const unchanged = {};
+  // Convert to safe records (null-prototype) for internal processing
+  const cur = toRecord(current);
+  const inc = toRecord(incoming);
 
-  const providers = _.union(Object.keys(current), Object.keys(incoming));
+  // Use null-prototype objects internally to prevent prototype pollution
+  const changed = Object.create(null);
+  const unlink = Object.create(null);
+  const unchanged = Object.create(null);
+
+  const providers = _.union(Object.keys(cur), Object.keys(inc));
+
+  if (providers.length > 32) {
+    throw new Parse.Error(
+      Parse.Error.VALIDATION_ERROR,
+      'Too many providers. Maximum 32 providers allowed.'
+    );
+  }
 
   for (const p of providers) {
-    const prev = current[p];
-    const next = incoming[p];
+    assertSafeProviderKey(p);
+
+    const prev = hasOwn(cur, p) ? cur[p] : undefined;
+    const next = hasOwn(inc, p) ? inc[p] : undefined;
 
     if (next === null) {
       unlink[p] = true;
@@ -699,6 +742,8 @@ const diffAuthData = (current = {}, incoming = {}) => {
       if (!_.isUndefined(prev)) unchanged[p] = prev;
       continue;
     }
+
+    assertProviderData(next);
 
     if (_.isUndefined(prev)) {
       changed[p] = next;
@@ -712,14 +757,14 @@ const diffAuthData = (current = {}, incoming = {}) => {
       continue;
     }
 
-    if (isDeepStrictEqual(prev, next)) {
-      unchanged[p] = prev;
-    } else if (subsetEqual(prev, next)) {
+    if (shallowStableEqual(prev, next) || isDeepStrictEqual(prev, next)) {
       unchanged[p] = prev;
     } else {
       changed[p] = next;
     }
   }
+  // Return null-prototype objects to maintain protection against prototype pollution
+  // Object.keys() works perfectly with null-prototype objects
   return { changed, unlink, unchanged };
 };
 
@@ -736,6 +781,5 @@ module.exports = {
   hasMutatedAuthData,
   checkIfUserHasProvidedConfiguredProvidersForLogin,
   handleAuthDataValidation,
-  subsetEqual,
   diffAuthData
 };
