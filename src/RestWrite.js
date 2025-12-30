@@ -594,10 +594,6 @@ RestWrite.prototype.handleAuthData = async function (authData) {
     baseAuthDataForDiff = await getBaseAuthDataForDiff(this);
     diff = Auth.diffAuthData(baseAuthDataForDiff || {}, authData || {});
     authDataForLookup = diff.changed || {};
-  } else if (this.auth && this.auth.user && this.originalData) {
-    baseAuthDataForDiff = await getBaseAuthDataForDiff(this);
-    diff = Auth.diffAuthData(baseAuthDataForDiff || {}, authData || {});
-    authDataForLookup = diff.changed || {};
   }
 
   const withoutUnlinked = Object.fromEntries(
