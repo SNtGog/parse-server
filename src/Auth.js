@@ -583,6 +583,8 @@ const handleAuthDataValidation = async (authData, req, foundUser) => {
   if (user && isUpdateOp && req.auth && req.auth.user && !req.auth.isMaster) {
     requestObject.user = user;
   }
+  // Perform validation as step-by-step pipeline for better error consistency
+  // and also to avoid to trigger a provider (like OTP SMS) if another one fails
   const acc = { authData: {}, authDataResponse: {} };
   const authKeys = Object.keys(authData).sort();
   for (const provider of authKeys) {

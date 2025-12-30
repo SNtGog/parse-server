@@ -78,7 +78,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.gpgames).toBeUndefined();
     });
 
-    // Level 1.1: Дополнительные способы создания пользователя
+    // Level 1.1: Additional user creation methods
     it('should create user with code only (without id)', async () => {
       // Note: gpgames adapter requires id for getUserFromAccessToken URL construction
       // This test documents that code-only login is not fully supported by gpgames adapter
@@ -191,7 +191,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.instagram.id).toBe('I1');
     });
 
-    // Level 1.2: Тесты на удаление провайдеров
+    // Level 1.2: Provider unlinking tests
     it('should unlink provider when it\'s the only one', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
@@ -305,7 +305,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.gpgames && authData.gpgames.id).toBe(MOCK_USER_ID);
     });
 
-    // Level 2.1: Множественные провайдеры (3+)
+    // Level 2.1: Multiple providers (3+)
     it('should handle three providers: add, update, unlink', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
@@ -398,7 +398,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.other).toBeDefined();
     });
 
-    // Level 2.2: Частичные обновления
+    // Level 2.2: Partial updates
     it('should update only one provider when multiple exist', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
@@ -646,7 +646,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.instagram && authData.instagram.id).toBe('I1');
     });
 
-    // Level 4.1: Комбинации code/id
+    // Level 4.1: code/id combinations
     it('should handle code without id (merge from baseAuthData)', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
@@ -780,7 +780,7 @@ describe('AuthData Delta Behavior', () => {
       mockHappyPath();
     });
 
-    // Level 4.2: Граничные случаи с пустым authData
+    // Level 4.2: Edge cases with empty authData
     it('should handle empty authData object', async () => {
       const user = await Parse.User.signUp(TEST_USERNAME, TEST_PASSWORD);
       const sessionToken = user.getSessionToken();
@@ -854,7 +854,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.instagram).toBeUndefined();
     });
 
-    // Level 4.3: Последовательные обновления
+    // Level 4.3: Sequential updates
     it('should preserve unchanged providers across updates', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
@@ -916,7 +916,7 @@ describe('AuthData Delta Behavior', () => {
       expect(authData.instagram).toBeDefined();
     });
 
-    // Level 4.4: Ошибки валидации
+    // Level 4.4: Validation errors
     it('should reject invalid code during update', async () => {
       const user = await Parse.User.logInWith('gpgames', {
         authData: { id: MOCK_USER_ID, code: 'C1' },
