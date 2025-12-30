@@ -578,13 +578,9 @@ RestWrite.prototype.handleAuthData = async function (authData) {
     authDataForLookup = diff.changed || {};
   }
 
-  const withoutUnlinked = {};
-  for (const provider of Object.keys(authDataForLookup)) {
-    if (authDataForLookup[provider] === null || authDataForLookup[provider] === undefined) {
-      continue;
-    }
-    withoutUnlinked[provider] = authDataForLookup[provider];
-  }
+  const withoutUnlinked = Object.fromEntries(
+    Object.entries(authDataForLookup).filter(([_, data]) => data != null)
+  );
 
   let results = [];
   if (Object.keys(withoutUnlinked).length > 0) {
