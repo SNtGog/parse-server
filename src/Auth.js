@@ -1,7 +1,6 @@
 const Parse = require('parse/node');
 import { isDeepStrictEqual } from 'util';
 import _ from 'lodash';
-import deepDiff from 'deep-diff';
 import { getRequestObject, resolveError } from './triggers';
 import { logger } from './logger';
 import { LRUCache as LRU } from 'lru-cache';
@@ -654,20 +653,26 @@ const subsetEqual = (prev, next) => {
   const tn = typeof next;
   if (tn !== 'object' || tp !== 'object') return prev === next;
 
-  const differences = deepDiff(prev, next);
-
-  if (!differences) {
+  if (Array.isArray(prev) && Array.isArray(next)) {
+    if (next.length > prev.length) return false;
+    for (let i = 0; i < next.length; i++) {
+      if (!subsetEqual(prev[i], next[i])) {
+        return false;
+      }
+    }
     return true;
   }
 
-  for (const diff of differences) {
-    if (diff.kind === 'N' || diff.kind === 'E') {
+  if (Array.isArray(prev) !== Array.isArray(next)) {
+    return false;
+  }
+
+  for (const key in next) {
+    if (!(key in prev)) {
       return false;
     }
-    if (diff.kind === 'A') {
-      if (diff.item && (diff.item.kind === 'N' || diff.item.kind === 'E')) {
-        return false;
-      }
+    if (!subsetEqual(prev[key], next[key])) {
+      return false;
     }
   }
 
@@ -707,9 +712,7 @@ const diffAuthData = (current = {}, incoming = {}) => {
       continue;
     }
 
-    const differences = deepDiff(prev, next);
-
-    if (!differences) {
+    if (isDeepStrictEqual(prev, next)) {
       unchanged[p] = prev;
     } else if (subsetEqual(prev, next)) {
       unchanged[p] = prev;

@@ -748,13 +748,14 @@ RestWrite.prototype.handleAuthData = async function (authData) {
         this.authDataResponse = res.authDataResponse;
       } else if (isCurrentUserLoggedOrMaster) {
         // This is an update operation (link/unlink)
-        // Prevent validating if no mutated data detected
-        if (!hasMutatedAuthData) {
+        // Skip validation only if no mutated data AND expired tokens are allowed
+        if (!hasMutatedAuthData && this.config.allowExpiredAuthDataToken) {
           return;
         }
-        // Validate only mutated providers on update
+        // Validate if data changed OR if expired tokens are not allowed
         if (hasMutatedAuthData || !this.config.allowExpiredAuthDataToken) {
-          const res = await Auth.handleAuthDataValidation(mutatedAuthData, this, userResult);
+          const dataToValidate = hasMutatedAuthData ? mutatedAuthData : authData;
+          const res = await Auth.handleAuthDataValidation(dataToValidate, this, userResult);
           this.data.authData = res.authData;
           this.authDataResponse = res.authDataResponse;
         }
