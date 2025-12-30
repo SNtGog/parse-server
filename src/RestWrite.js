@@ -557,15 +557,6 @@ async function getBaseAuthDataForDiff(req) {
     }
   } else if (req.originalData && req.originalData.authData !== undefined) {
     return req.originalData.authData || {};
-  } else if (req.auth && req.auth.user) {
-    try {
-      const user = new Parse.User();
-      user.id = req.auth.user.id;
-      await user.fetch({ useMasterKey: true });
-      return user.get('authData') || {};
-    } catch (e) {
-      return {};
-    }
   }
   return {};
 }
