@@ -176,6 +176,7 @@ function loadAuthAdapter(provider, authOptions) {
     'validateOptions',
     'policy',
     'afterFind',
+    'beforeFind',
   ];
   const defaultAuthAdapter = new AuthAdapter();
   keys.forEach(key => {
